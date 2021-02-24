@@ -1,10 +1,10 @@
 {
-  "name": "@kubernetes/client-node",
-  "version": "0.14.1",
+  "name": "client-node-fixed-watcher",
+  "version": "0.13.5",
   "description": "NodeJS client for kubernetes",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kubernetes-client/javascript.git"
+    "url": "https://github.com/jkryl/javascript.git"
   },
   "files": [
     "dist/*.ts",

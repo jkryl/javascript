@@ -1,5 +1,10 @@
+import assert = require('assert');
 import byline = require('byline');
+import http = require('http');
+import https = require('https');
 import request = require('request');
+import url = require('url');
+
 import { Duplex } from 'stream';
 import { KubeConfig } from './config';
 
@@ -27,6 +32,32 @@ export interface RequestInterface {
     webRequest(opts: request.OptionsWithUri): RequestResult;
 }
 
+// We derive our own agent class for http/https. It is a workaround for a bug
+// in the request lib where the keep-alive option isn't respected in all cases:
+// https://github.com/request/request/issues/3367. The idea of the fix is to
+// have an agent with unique name just for the watcher connections. The name
+// is used by request library to construct pool-ID.
+//
+// TODO: Request lib is deprecated and cannot be fixed. It should be replaced
+// by another library.
+class HttpsWatcherAgent extends https.Agent {
+    public name: string;
+
+    constructor(opts: https.AgentOptions) {
+        super(opts);
+        // this is read and used by request lib when constructing the pool-id
+        this.name = 'watcherHttpsAgent';
+    }
+}
+class HttpWatcherAgent extends http.Agent {
+    public name: string;
+
+    constructor(opts: http.AgentOptions) {
+        super(opts);
+        this.name = 'watcherHttpAgent';
+    }
+}
+
 export class DefaultRequest implements RequestInterface {
     // requestImpl can be overriden in case we need to test mocked DefaultRequest
     private requestImpl: (opts: request.OptionsWithUri) => request.Request;
@@ -40,6 +71,25 @@ export class DefaultRequest implements RequestInterface {
     // would otherwise require a different error handling, in a transparent way
     // to the user (see github issue request/request#647 for more info).
     public webRequest(opts: request.OptionsWithUri): RequestResult {
+        // agentClass is set here in webRequest hook because it is a workaround
+        // specific to the request lib. Other HTTP libraries don't need it.
+        if (opts.agentClass === undefined) {
+            let proto: string;
+            if (typeof opts.uri === 'string') {
+                proto = url.parse(opts.uri).protocol || 'http';
+            } else {
+                proto = opts.uri.protocol || 'http';
+            }
+            let agentClass;
+            if (proto === 'https:') {
+                agentClass = HttpsWatcherAgent;
+            } else if (proto === 'http:') {
+                agentClass = HttpWatcherAgent;
+            } else {
+                assert(false, `Unknown protocol "${proto}"`);
+            }
+            opts.agentClass = agentClass;
+        }
         const req = this.requestImpl(opts);
         // pause the stream until we get a response not to miss any bytes
         req.pause();
@@ -84,7 +134,7 @@ export class Watch {
         if (!cluster) {
             throw new Error('No currently active cluster');
         }
-        const url = cluster.server + path;
+        const uri = cluster.server + path;
 
         queryParams.watch = true;
         const headerParams: any = {};
@@ -93,10 +143,12 @@ export class Watch {
             method: 'GET',
             qs: queryParams,
             headers: headerParams,
-            uri: url,
+            uri,
             useQuerystring: true,
             json: true,
-            pool: false,
+            agentOptions: {
+                keepAlive: true,
+            },
         };
         await this.config.applyToRequest(requestOptions);
 
